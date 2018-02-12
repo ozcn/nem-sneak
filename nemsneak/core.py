@@ -6,6 +6,7 @@ from urllib import request
 from codecs import getreader
 from datetime import datetime, timezone
 import time
+from queue import PriorityQueue
 from threading import Thread
 import collections
 
@@ -210,24 +211,25 @@ class Chaser(Thread):
         return None
 
     def run(self):
-        queue = [(self.target, self.dt_from)]
+        queue = PriorityQueue()
+        queue.put((self.dt_from, self.target))
         known = {}
-        while len(queue) != 0:
-            t = queue.pop()
+        while not queue.empty() != 0:
+            t = queue.get()
             to_dt = datetime.now(self.conn.tz)
-            if t[0] in known:
-                if known[t[0]] <= t[1]:
+            if t[1] in known:
+                if known[t[1]] <= t[0]:
                     continue
-                to_dt = known[t[0]]
-            transactions = self.conn.get_outgoing_tx(t[0], t[1])
+                to_dt = known[t[1]]
+            transactions = self.conn.get_outgoing_tx(t[1], t[0])
             for tx in transactions:
                 dt = self.conn.ts2dt(tx['transaction']['timeStamp'])
                 if dt < to_dt:
-                    self.hook(t[0], tx)
+                    self.hook(t[1], tx)
                 to_addr = self.get_recipient(tx)
                 if to_addr is not None:
-                    queue.append((to_addr, dt))
-            known[t[0]] = t[1]
+                    queue.put((dt, to_addr))
+            known[t[1]] = t[0]
             time.sleep(0.1)
 
 
