@@ -62,7 +62,7 @@ class Connection(object):
         )['account']['address']
 
     def get(self, route, param=None):
-        """get request
+        """GET request
 
         :param route: API route
         :param param: get parameters (dict)
@@ -72,6 +72,20 @@ class Connection(object):
                 '?' + '&'.join((k + '=' + str(v) for k, v in param.items()))
             ) if param is not None else '')
         with closing(request.urlopen(url)) as conn:
+            return json.load(getreader('utf-8')(conn))
+
+    def post(self, route, param=None):
+        """POST request
+
+        :param route: API route
+        :param param: POST parameters (dict)
+        """
+        req = request.Request(
+            self.base_url.strip('/') + '/' + route.strip('/')
+        )
+        req.add_header('Content-Type', 'application/json')
+        query = bytes(json.dumps(param if param is not None else {}), 'utf-8')
+        with closing(request.urlopen(req, query)) as conn:
             return json.load(getreader('utf-8')(conn))
 
     def get_account_info(self, account_address):
