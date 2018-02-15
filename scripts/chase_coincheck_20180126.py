@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from argparse import ArgumentParser
 import os
 import csv
 from datetime import datetime
@@ -10,92 +11,135 @@ import pytz
 import nemsneak
 from nemsneak import util
 
-tokyo_tz = pytz.timezone('Asia/Tokyo')
-conn = nemsneak.Connection(tokyo_tz, 'http://localhost:7890')
 
-start_time = datetime.now()
+if __name__ == '__main__':
+    parser = ArgumentParser(
+        'enumerate all the "infected" accounts.' +
+        '"infected" means the accounts which recieved XEM from the root or ' +
+        ' an infected account.'
+    )
+    parser.add_argument('target', help='the root account')
+    parser.add_argument(
+        '--dt_from',
+        help='search after this datetime. specify if of the form ' +
+        '%%Y%%m%%d%%H%%M%%S (ex: 20180126000200). (default: 20180126000200)',
+        default='20180126000200'
+    )
+    parser.add_argument(
+        '--timezone', help='timezone (default: Asia/Tokyo)',
+        default='Asia/Tokyo'
+    )
+    parser.add_argument(
+        '--api_host', help='API Host (default: http://localhost:7890)',
+        default='http://localhost:7890'
+    )
+    args = parser.parse_args()
+    tz = pytz.timezone(args.timezone)
+    conn = nemsneak.Connection(tz, args.api_host)
 
-target = 'NC4C6PSUW5CLTDT5SXAGJDQJGZNESKFK5MCN77OG'
-from_dt = datetime(2018, 1, 26, 0, 0, 0, 0, tokyo_tz)
+    start_time = datetime.now()
 
-minarin_mosaic = {
-    'namespaceId': 'mizunashi.coincheck_stolen_funds_do_not_accept_trades',
-    'name': 'owner_of_this_account_is_hacker'
-}
+    target = args.target
+    from_dt = datetime.strptime(args.dt_from, '%Y%m%d%H%M%S').replace(
+        tzinfo=tz
+    )
 
+    marked_mosaics = ({
+        'namespaceId': 'ts',
+        'name': 'warning_dont_accept_stolen_funds'
+    }, {
+        'namespaceId': 'mizunashi.coincheck_stolen_funds_do_not_accept_trades',
+        'name': 'owner_of_this_account_is_hacker',
+    })
 
-def is_marked(addr):
-    tmp = conn.get('/account/mosaic/owned', {'address': addr})['data']
-    time.sleep(0.1)
-    for d in tmp:
-        if d['mosaicId']['namespaceId'] == minarin_mosaic['namespaceId'] and\
-                    d['mosaicId']['name'] == minarin_mosaic['name']:
-            return True
-    return False
+    marked_mosaic_slug = tuple(
+        ':'.join((d['namespaceId'], d['name'])) for d in marked_mosaics
+    )
 
+    def is_marked(addr):
+        tmp = conn.get('/account/mosaic/owned', {'address': addr})['data']
+        time.sleep(0.1)
+        mosaic_set = set(
+            ':'.join((
+                d['mosaicId']['namespaceId'],
+                d['mosaicId']['name']
+            )) for d in tmp
+        )
+        return tuple([
+            s in mosaic_set for s in marked_mosaic_slug
+        ])
 
-queue = [(target, from_dt)]
-known = {}
+    queue = [(target, from_dt)]
+    known = {}
 
-res = []
+    res = []
 
+    def hook_func(sender, tx):
+        print((sender, tx['transaction']['timeStamp']))
+        res.append(tuple(util.pp_transaction([
+            'datetime', 'amount', 'from_address', 'to_address', 'fee',
+            'message'
+        ], util.tidy_transaction(
+            tx, conn, sender
+        ))))
+        print(res[-1])
 
-def hook_func(sender, tx):
-    print((sender, tx['transaction']['timeStamp']))
-    res.append(util.pp_transaction([
-        'datetime', 'amount', 'from_address', 'to_address', 'fee'
-    ], util.tidy_transaction(
-        tx, conn, sender
-    )))
+    ch = nemsneak.Chaser(
+        target, conn,
+        hook_func, from_dt, daemon=True
+    )
 
+    ch.start()
 
-ch = nemsneak.Chaser(
-    target, conn,
-    hook_func, from_dt, daemon=True
-)
+    ch.join()
 
-ch.start()
+    addrs = set(
+        [d[2] for d in res if d[2] is not None] +
+        [d[3] for d in res if d[3] is not None]
+    )
 
-ch.join()
+    info = {}
 
+    for addr in addrs:
+        tmp = conn.get_account_info(addr)
+        time.sleep(0.1)
+        info[addr] = (
+            tmp['account']['balance'],
+            tmp['account']['vestedBalance']
+        ) + is_marked(addr)
 
-addrs = set(
-    [d[2] for d in res if d[2] is not None] +
-    [d[3] for d in res if d[3] is not None]
-)
+    res.sort(key=lambda x: x[0])
 
-info = {}
-
-for addr in addrs:
-    whichmin = (None, None, None)
     for d in res:
-        if d[3] == addr:
-            if whichmin[0] is None or whichmin[0] > d[0]:
-                whichmin = (d[0], d[1], d[2])
-    info[addr] = (is_marked(addr), ) + whichmin
+        print(d)
 
-res.sort(key=lambda x: x[0])
+    if not os.path.exists('results'):
+        os.makedirs('results')
 
-for d in res:
-    print(d)
+    with open(os.path.join(
+                'results',
+                'info_{}.csv'.format(start_time.strftime('%Y%m%d_%H%M%S'))
+            ), 'w') as fout:
+        wr = csv.writer(fout, lineterminator='\n')
+        wr.writerow((
+            'address', 'balance', 'vestedBalance'
+        ) + marked_mosaic_slug)
+        for k, v in info.items():
+            wr.writerow((k, ) + v)
 
-if not os.path.exists('results'):
-    os.makedirs('results')
-
-with open(os.path.join(
-            'results',
-            'info_{}.csv'.format(start_time.strftime('%Y%m%d_%H%M%S'))
-        ), 'w') as fout:
-    wr = csv.writer(fout, lineterminator='\n')
-    wr.writerow(['address', 'is_marked', 'first_recieved_at',
-                 'first_tx_amount', 'first_tx_sender'])
-    for k, v in info.items():
-        wr.writerow((k, ) + v)
-
-with open(os.path.join(
-            'results',
-            'tx_{}.csv'.format(start_time.strftime('%Y%m%d_%H%M%S'))
-        ), 'w') as fout:
-    wr = csv.writer(fout, lineterminator='\n')
-    wr.writerow(['datetime', 'amount', 'from_address', 'to_address', 'fee'])
-    wr.writerows(res)
+    with open(os.path.join(
+                'results',
+                'tx_{}.csv'.format(start_time.strftime('%Y%m%d_%H%M%S'))
+            ), 'w') as fout:
+        wr = csv.writer(fout, lineterminator='\n')
+        wr.writerow([
+            'datetime', 'amount', 'from_address', 'to_address', 'fee',
+            'message', 'is_sender_marked', 'is_recipient_marked'
+        ])
+        for d in res:
+            wr.writerow(
+                d + (
+                    any(t for t in info[d[2]][2:]) if d[2] is not None else '',
+                    any(t for t in info[d[3]][2:]) if d[3] is not None else ''
+                )
+            )
