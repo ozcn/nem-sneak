@@ -205,6 +205,18 @@ class Connection(object):
 
 
 class Chaser(Thread):
+    """Enumerate all addresses and related transactions from the ``target``
+
+    :param target: the root address
+    :param conn: Connection class instance
+    :param hook: a callable which is called as \
+    ``hook(from_address, transaction)`` when a transaction is found.
+    :param dt_from: when to start
+    :param thread_name: The name of the thread. default: None
+    :param deamon: If not None, daemon explicitly sets whether the thread is \
+    daemonic. If None (the default), the daemonic property is inherited from \
+    the current thread.
+    """
     def __init__(self, target, conn, hook, dt_from, thread_name=None,
                  daemon=None):
         super(Chaser, self).__init__(name=thread_name, daemon=daemon)
