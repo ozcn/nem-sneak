@@ -147,7 +147,8 @@ class Connection(object):
         """
         return self.get_tx_single('all', account_address, id_, hash_)
 
-    def get_tx_loop(self, type_, account_address, dt_from, buffer_sec=600):
+    def get_tx_loop(self, type_, account_address, dt_from, dt_to=None,
+                    buffer_sec=600):
         """get the transaction data after ``dt_from``
 
         :param type_: transaction type. one of 'all', 'incoming', 'outgoing'
@@ -155,7 +156,8 @@ class Connection(object):
         :param dt_from: native datetime
         :param buffer_sec: time buffer
         """
-        ts = self.dt2ts(dt_from)
+        ts_from = self.dt2ts(dt_from)
+        ts_to = self.dt2ts(dt_to) if dt_to is not None else None
         res = []
         id_ = None
         last_ts = None
@@ -167,41 +169,43 @@ class Connection(object):
                 break
             for d in tmp['data']:
                 _t = d['transaction']['timeStamp']
-                if _t >= ts:
+                if _t >= ts_from and (
+                            ts_to is not None and _t <= ts_to
+                        ):
                     res.append(d)
                 if id_ is None or id_ > d['meta']['id']:
                     id_ = d['meta']['id']
                 if last_ts is None or last_ts > _t:
                     last_ts = _t
-            if (last_ts + buffer_sec) < ts:
+            if (last_ts + buffer_sec) < ts_from:
                 break
             else:
                 time.sleep(0.1)
         return res
 
-    def get_outgoing_tx(self, account_address, dt_from):
+    def get_outgoing_tx(self, account_address, dt_from, dt_to=None):
         """get the outgoing transaction data after ``dt_from``
 
         :param account_address: the address of the account
         :param dt_from: native datetime
         """
-        return self.get_tx_loop('outgoing', account_address, dt_from)
+        return self.get_tx_loop('outgoing', account_address, dt_from, dt_to)
 
-    def get_incoming_tx(self, account_address, dt_from):
+    def get_incoming_tx(self, account_address, dt_from, dt_to=None):
         """get the incoming transaction data after ``dt_from``
 
         :param account_address: the address of the account
         :param dt_from: native datetime
         """
-        return self.get_tx_loop('incoming', account_address, dt_from)
+        return self.get_tx_loop('incoming', account_address, dt_from, dt_to)
 
-    def get_all_tx(self, account_address, dt_from):
+    def get_all_tx(self, account_address, dt_from, dt_to=None):
         """get the transaction data after ``dt_from``
 
         :param account_address: the address of the account
         :param dt_from: native datetime
         """
-        return self.get_tx_loop('all', account_address, dt_from)
+        return self.get_tx_loop('all', account_address, dt_from, dt_to)
 
 
 class Chaser(Thread):
@@ -217,12 +221,13 @@ class Chaser(Thread):
     daemonic. If None (the default), the daemonic property is inherited from \
     the current thread.
     """
-    def __init__(self, target, conn, hook, dt_from, thread_name=None,
-                 daemon=None):
+    def __init__(self, target, conn, hook, dt_from, dt_to=None,
+                 thread_name=None, daemon=None):
         super(Chaser, self).__init__(name=thread_name, daemon=daemon)
         self.target = target
         self.hook = hook
         self.dt_from = dt_from
+        self.dt_to = dt_to
         self.conn = conn
 
     @classmethod
@@ -247,7 +252,7 @@ class Chaser(Thread):
                 if known[t[1]] <= t[0]:
                     continue
                 to_dt = known[t[1]]
-            transactions = self.conn.get_outgoing_tx(t[1], t[0])
+            transactions = self.conn.get_outgoing_tx(t[1], t[0], self.dt_to)
             for tx in transactions:
                 dt = self.conn.ts2dt(tx['transaction']['timeStamp'])
                 if dt < to_dt:
