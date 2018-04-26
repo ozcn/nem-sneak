@@ -394,7 +394,16 @@ class Chaser(Thread):
     :param conn: Connection class instance
     :param hook: a callable which is called as \
     ``hook(from_address, transaction)`` when a transaction is found.
-    :param dt_from: when to start
+    :param dt_from: time range start
+    :param dt_to: time range end (default: ``None``; means now)
+    :param chase_filter: ``None`` or a callable which is called as\
+    ``chase_filter(tx, dt, to_addr, from_addr, self)`` and returns a bool\
+    which indicates ``to_addr`` should be queued.\
+    (default: None; means "always True")
+    :param hook_filter: ``None`` or a callable which is called as\
+    ``hook_filter(tx, dt, from_addr, self)`` and returns a bool\
+    which indicates ``hook`` should be called.\
+    (default: ``None`` means "always True")
     :param thread_name: The name of the thread. default: None
     :param deamon: If not None, daemon explicitly sets whether the thread is \
     daemonic. If None (the default), the daemonic property is inherited from \
