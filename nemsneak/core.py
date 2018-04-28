@@ -6,6 +6,7 @@ from urllib import request
 from codecs import getreader
 from datetime import datetime, timezone
 import time
+import math
 from queue import PriorityQueue
 from threading import Thread
 import collections
@@ -386,6 +387,89 @@ class Connection(object):
         """
         return self.get_tx_loop('all', account_address, dt_from, dt_to)
 
+    def get_last_block(self):
+        """get the last block information
+        """
+        return self.get('chain/last-block')
+
+    def get_block_by_height(self, height):
+        """get the block information at the given height
+
+        :param height: block height
+        """
+        return self.post('block/at/public', {'height': height})
+
+    def get_block_at(self, dt):
+        """get the block information at the given datetime. this function\
+        uses binary search to find the target block.
+
+        :param dt: datetime
+        """
+        ts = self.dt2ts(dt)
+        time.sleep(0.1)
+        lastblk = self.get_last_block()
+        if ts < 0 or lastblk['timeStamp'] < ts:
+            return None
+        if lastblk['timeStamp'] == ts:
+            return lastblk
+        rng = [0, lastblk['height']]
+        while rng[1] - rng[0] > 1:
+            h = int(math.ceil(rng[1] + rng[0]) / 2)
+            time.sleep(0.1)
+            blk = self.get_block_by_height(h)
+            if blk['timeStamp'] < ts:
+                rng[0] = blk['height']
+            else:
+                rng[1] = blk['height']
+        time.sleep(0.1)
+        return self.get_block(rng[0])
+
+    def get_account_info_by_height(self, account, height):
+        """get account info at the given height.
+
+        :param account: account
+        :param height: block height
+        """
+        return self.get_account_historical_info(
+            account, height, height, 1
+        )['data'][0]
+
+    def get_account_info_by_height_range(self, account, height_from,
+                                         height_to, stride=10000):
+        """get account info at the given height range.
+
+        :param account: account
+        :param height_from: block height
+        :param height_to: block height
+        """
+        s = height_from
+        t = min(s + stride - 1, height_to)
+        res = []
+        while True:
+            if s > t:
+                return res
+            time.sleep(0.1)
+            res += self.get_account_historical_info(account, s, t, 1)['data']
+            s = t + 1
+            t = min(s + stride - 1, height_to)
+        return res
+
+    def get_account_historical_info(self, account, start_height, end_height,
+                                    increment):
+        """get account info at the given height.
+
+        :param account: account
+        :param startHeight: block height
+        :param endHeight: block height
+        :param increment: increment
+        """
+        return self.get('account/historical/get', {
+            'address': account,
+            'startHeight': start_height,
+            'endHeight': end_height,
+            'increment': increment
+        })
+
 
 class Chaser(Thread):
     """Enumerate all addresses and related transactions from the ``target``
@@ -413,13 +497,15 @@ class Chaser(Thread):
                  chase_filter=None, hook_filter=None,
                  thread_name=None, daemon=None):
         super(Chaser, self).__init__(name=thread_name, daemon=daemon)
+        self.conn = conn
         self.target = target
         self.hook = hook
         self.dt_from = dt_from
-        self.dt_to = dt_to
-        self.chase_filter = chase_filter
-        self.hook_filter = hook_filter
-        self.conn = conn
+        self.dt_to = dt_to if dt_to is not None else datetime.now(self.conn.tz)
+        self.chase_filter = chase_filter if chase_filter is not None else\
+            lambda tx, dt, to_addr, from_addr, s: True
+        self.hook_filter = hook_filter if hook_filter is not None else\
+            lambda tx, dt, from_addr, s: True
 
     @classmethod
     def get_recipient(cls, tx):
@@ -433,33 +519,70 @@ class Chaser(Thread):
         return None
 
     def run(self):
-        queue = PriorityQueue()
-        queue.put((self.dt_from, self.target))
-        known = {}
-        while not queue.empty() != 0:
-            t = queue.get()
-            to_dt = datetime.now(self.conn.tz)
-            if t[1] in known:
-                if known[t[1]] <= t[0]:
-                    continue
-                to_dt = known[t[1]]
+        pq = {}
+        pq[self.target] = self.dt_from
+        known = dict([(self.target, self.dt_from)])
+        while len(pq) != 0:
+            t = sorted([(v, k) for k, v in pq.items()])[0]
+            del pq[t[1]]
             transactions = self.conn.get_outgoing_tx(t[1], t[0], self.dt_to)
             for tx in transactions:
                 dt = self.conn.ts2dt(tx['transaction']['timeStamp'])
-                if dt < to_dt and (
-                            self.hook_filter is None or
-                            self.hook_filter(tx, dt, t[1], self)
-                        ):
+                if self.hook_filter(tx, dt, t[1], self):
                     self.hook(t[1], tx)
                 to_addr = self.get_recipient(tx)
-                if to_addr is not None and (
-                            self.chase_filter is None or
-                            self.chase_filter(
-                                tx, dt, to_addr, t[1], self
-                            )
+                if to_addr is not None and self.chase_filter(
+                            tx, dt, to_addr, t[1], self
+                        ) and (
+                            to_addr not in known or known[to_addr] > dt
                         ):
-                    queue.put((dt, to_addr))
-            known[t[1]] = t[0]
+                    pq[to_addr] = dt
+                    known[to_addr] = dt
+            time.sleep(0.1)
+
+
+class Digger(Thread):
+    """Enumerate all addresses and related transactions from the ``target``
+
+    :param target: the root address
+    :param conn: Connection class instance
+    :param hook: a callable which is called as \
+    ``hook(tx, from_addr)`` when a transaction is found.\
+    should return ``payload``.
+    :param gen_next: ``None`` or a callable which is called as\
+    ``gen_next(payload, tx, from_addr, self)`` and returns a list of\
+    ``(dt_from, addr)``.
+    :param dt_from: time range start
+    :param dt_to: time range end (default: ``None``; means now)
+    :param thread_name: The name of the thread. default: None
+    :param deamon: If not None, daemon explicitly sets whether the thread is \
+    daemonic. If None (the default), the daemonic property is inherited from \
+    the current thread.
+    """
+    def __init__(self, target, conn, hook, gen_next, dt_from, dt_to=None,
+                 thread_name=None, daemon=None):
+        super(Digger, self).__init__(name=thread_name, daemon=daemon)
+        self.conn = conn
+        self.target = target
+        self.hook = hook
+        self.gen_next = gen_next
+        self.dt_from = dt_from
+        self.dt_to = dt_to if dt_to is not None else datetime.now(self.conn.tz)
+
+    def run(self):
+        pq = dict([(self.target, self.dt_from)])
+        known = dict([(self.target, self.dt_from)])
+        while len(pq) != 0:
+            t = sorted([(v, k) for k, v in pq.items()])[0]
+            del pq[t[1]]
+            transactions = self.conn.get_outgoing_tx(t[1], t[0], self.dt_to)
+            for tx in transactions:
+                payload = self.hook(tx, t[1])
+                for (dt_from, next_addr) in self.gen_next(
+                        payload, tx, t[1], self):
+                    if next_addr not in known or known[next_addr] > dt_from:
+                        pq[next_addr] = dt_from
+                        known[next_addr] = dt_from
             time.sleep(0.1)
 
 
