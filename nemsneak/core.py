@@ -422,7 +422,7 @@ class Connection(object):
             else:
                 rng[1] = blk['height']
         time.sleep(0.1)
-        return self.get_block(rng[0])
+        return self.get_block_by_height(rng[0])
 
     def get_account_info_by_height(self, account, height):
         """get account info at the given height.
