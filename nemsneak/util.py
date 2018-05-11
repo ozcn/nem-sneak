@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from collections import Iterable, Mapping
 import codecs
 
 
@@ -81,6 +82,25 @@ def pp_transaction(keys, ttr):
     ]
 
 
+def is_container(x):
+    return isinstance(x, Iterable) and not isinstance(x, (str, bytes))
+
+
+def rec_key_type(obj):
+    if isinstance(obj, Mapping):
+        res = []
+        for k, v in obj.items():
+            data = rec_key_type(v)
+            if is_container(data):
+                for d in data:
+                    res.append(('.'.join((k, d[0])), d[1]))
+            else:
+                res.append((k, data))
+        return tuple(sorted(res))
+    else:
+        return type(obj).__name__
+
+
 def decode_message(tr):
     if 'transaction' not in tr:
         return '<<NO TRANSACTION>>'
@@ -101,3 +121,50 @@ def decode_message(tr):
         ).decode('utf-8')
     except:
         return msg['payload'] + ' <<UTF-8 DECODE ERROR>>'
+
+
+def get_tx_type(data):
+    if 'transaction' not in data or 'type' not in data['transaction']:
+        raise TypeError(data)
+    tx = data['transaction']
+    tx_type = tx['type']
+    if tx_type == 257:
+        if 'modifications' in tx and 'minCosignatories' in tx:
+            return 'MultisigAggregateModificationTransaction'
+        if 'otherHash' in tx and 'otherAccount' in tx:
+            return 'MultisigSignatureTransaction'
+        if 'otherTrans' in tx and 'signatures' in tx:
+            return 'MultisigTransaction'
+        return 'TransferTransaction'
+    if tx_type == 4097:
+        return 'ConvertingAnAccountToAMultisigAccount'
+    if tx_type == 4100:
+        if 'otherTrans' not in tx['transaction']:
+            raise TypeError(tx)
+        return get_tx_type({'transaction': tx['transaction']['otherTrans']})
+    if tx_type == 4098:
+        return 'CosigningMultisigTransaction'
+    if tx_type == 4097:
+        return 'AddingAndRemovingCosignatories'
+    if tx_type == 8193:
+        return 'ProvisionNamespaceTransaction'
+    if tx_type == 16385:
+        return 'MosaicDefinitionCreationTransaction'
+    if tx_type == 16386:
+        return 'MosaicSupplyChangeTransaction'
+    if tx_type == 2049:
+        return 'ImportanceTransferTransaction'
+    raise TypeError(data)
+
+
+def get_raw_transaction(data):
+    if 'transaction' not in data or 'type' not in data['transaction']:
+        raise TypeError(data)
+    if 'otherTrans' in data['transaction']:
+        return data['transaction']['otherTrans']
+    return data['transaction']
+
+
+def is_transfer_transaction(data):
+    tx_type = get_tx_type(data)
+    return tx_type == 'TransferTransaction'
